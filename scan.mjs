@@ -81,6 +81,7 @@ function parseGreenhouse(json, companyName) {
     url: j.absolute_url || '',
     company: companyName,
     location: j.location?.name || '',
+    posted_at: j.updated_at || j.first_published_at || null,
   }));
 }
 
@@ -91,6 +92,7 @@ function parseAshby(json, companyName) {
     url: j.jobUrl || '',
     company: companyName,
     location: j.location || '',
+    posted_at: j.publishedAt || j.updatedAt || null,
   }));
 }
 
@@ -101,6 +103,7 @@ function parseLever(json, companyName) {
     url: j.hostedUrl || '',
     company: companyName,
     location: j.categories?.location || '',
+    posted_at: j.createdAt ? new Date(j.createdAt).toISOString() : null,
   }));
 }
 
@@ -131,6 +134,20 @@ function buildTitleFilter(titleFilter) {
     const hasPositive = positive.length === 0 || positive.some(k => lower.includes(k));
     const hasNegative = negative.some(k => lower.includes(k));
     return hasPositive && !hasNegative;
+  };
+}
+
+// ── Freshness filter ────────────────────────────────────────────────
+
+function buildFreshnessFilter(freshnessConfig) {
+  const maxAgeHours = freshnessConfig?.max_age_hours;
+  if (!maxAgeHours) return () => true;
+  return (job) => {
+    if (!job.posted_at) return true; // no timestamp = allow through, marked unverified
+    const postedMs = new Date(job.posted_at).getTime();
+    if (isNaN(postedMs)) return true;
+    const ageMs = Date.now() - postedMs;
+    return ageMs <= maxAgeHours * 60 * 60 * 1000;
   };
 }
 
@@ -264,6 +281,7 @@ async function main() {
   const config = parseYaml(readFileSync(PORTALS_PATH, 'utf-8'));
   const companies = config.tracked_companies || [];
   const titleFilter = buildTitleFilter(config.title_filter);
+  const freshnessFilter = buildFreshnessFilter(config.freshness);
 
   // 2. Filter to enabled companies with detectable APIs
   const targets = companies
@@ -285,6 +303,7 @@ async function main() {
   const date = new Date().toISOString().slice(0, 10);
   let totalFound = 0;
   let totalFiltered = 0;
+  let totalStale = 0;
   let totalDupes = 0;
   const newOffers = [];
   const errors = [];
@@ -299,6 +318,10 @@ async function main() {
       for (const job of jobs) {
         if (!titleFilter(job.title)) {
           totalFiltered++;
+          continue;
+        }
+        if (!freshnessFilter(job)) {
+          totalStale++;
           continue;
         }
         if (seenUrls.has(job.url)) {
@@ -335,6 +358,7 @@ async function main() {
   console.log(`Companies scanned:     ${targets.length}`);
   console.log(`Total jobs found:      ${totalFound}`);
   console.log(`Filtered by title:     ${totalFiltered} removed`);
+  console.log(`Stale (>${config.freshness?.max_age_hours || '∞'}h old):   ${totalStale} skipped`);
   console.log(`Duplicates:            ${totalDupes} skipped`);
   console.log(`New offers added:      ${newOffers.length}`);
 
